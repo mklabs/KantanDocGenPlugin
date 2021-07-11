@@ -10,7 +10,7 @@
 #include "BlueprintActionDatabase.h"
 #include "BlueprintNodeSpawner.h"
 #include "K2Node.h"
-#include "Async/TaskGraphInterfaces.h"
+#include "K2Node_Variable.h"
 #include "Enumeration/ISourceObjectEnumerator.h"
 #include "Enumeration/NativeModuleEnumerator.h"
 #include "Enumeration/ContentPathEnumerator.h"
@@ -249,13 +249,25 @@ void FDocGenTaskProcessor::ProcessTask(TSharedPtr< FDocGenTask > InTask)
 					continue;
 				}
 
-				// Generate doc
-				if(!Current->DocGen->GenerateNodeDocs(NodeInst, NodeState))
+				if (NodeInst->IsA<UK2Node_Variable>())
 				{
-					UE_LOG(LogKantanDocGen, Warning, TEXT("Failed to generate node doc xml!"))
-					continue;
+					// Generate doc for variables
+					UK2Node_Variable* NodeVariableInst = Cast<UK2Node_Variable>(NodeInst);
+					if(!Current->DocGen->GenerateVariableDocs(NodeVariableInst, NodeState))
+					{
+						UE_LOG(LogKantanDocGen, Warning, TEXT("Failed to generate variable doc xml!"))
+						continue;
+					}
 				}
-
+				else
+				{
+					// Generate doc
+					if(!Current->DocGen->GenerateNodeDocs(NodeInst, NodeState))
+					{
+						UE_LOG(LogKantanDocGen, Warning, TEXT("Failed to generate node doc xml!"))
+						continue;
+					}
+				}
 				++SuccessfulNodeCount;
 			}
 		}

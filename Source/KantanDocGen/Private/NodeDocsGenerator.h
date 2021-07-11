@@ -52,6 +52,7 @@ public:
 	/** Callable from background thread */
 	bool GenerateNodeImage(UEdGraphNode* Node, FNodeProcessingState& State);
 	bool GenerateNodeDocs(UK2Node* Node, FNodeProcessingState& State);
+	bool GenerateVariableDocs(UK2Node_Variable* Node, FNodeProcessingState& State);
 	/**/
 
 protected:

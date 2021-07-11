@@ -34,6 +34,7 @@
 #include "BlueprintVariableNodeSpawner.h"
 #include "BlueprintDelegateNodeSpawner.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_Variable.h"
 
 FNodeDocsGenerator::~FNodeDocsGenerator()
 {
@@ -81,6 +82,13 @@ UK2Node* FNodeDocsGenerator::GT_InitializeForSpawner(UBlueprintNodeSpawner* Spaw
 {
 	if(!IsSpawnerDocumentable(Spawner, SourceObject->IsA< UBlueprint >()))
 	{
+		UE_LOG(
+			LogKantanDocGen,
+			Warning, TEXT("Not documentable %s with node class %s. SourceObject: %s"),
+			*Spawner->GetClass()->GetName(),
+			Spawner->NodeClass ? *Spawner->NodeClass->GetName() : TEXT("None"),
+			*SourceObject->GetName()
+		);
 		return nullptr;
 	}
 
@@ -91,32 +99,15 @@ UK2Node* FNodeDocsGenerator::GT_InitializeForSpawner(UBlueprintNodeSpawner* Spaw
 		UBlueprintBoundEventNodeSpawner* BlueprintBoundEventNodeSpawner = Cast<UBlueprintBoundEventNodeSpawner>(Spawner);
 
 		FMulticastDelegateProperty const* DelegateProperty = BlueprintBoundEventNodeSpawner->GetEventDelegate();
-		UField* Field = DelegateProperty->GetOwnerUField();
-		FName EventName = Field->GetFName();
-		FString Name = Field->GetName();
-
-		const FProperty* OwnerProperty = DelegateProperty->GetOwnerProperty();
-		const FName PropFName = OwnerProperty->GetFName();
-		FString PropName = OwnerProperty->GetName();
-		UClass* OwnerClass = DelegateProperty->GetOwnerClass();
-		UClass* SourceClass = SourceObject->GetClass();
-
-		FString OwnerClassName = OwnerClass->GetName();
-		FString SourceClassName = SourceClass->GetName();
-
-
-		const FObjectProperty* ComponentProperty = Cast<FObjectProperty>(DelegateProperty);
 
 		// Create a new event node
-		UK2Node_ComponentBoundEvent* EventNode = FEdGraphSchemaAction_K2NewNode::SpawnNode<UK2Node_ComponentBoundEvent>(
+		NodeInst = FEdGraphSchemaAction_K2NewNode::SpawnNode<UK2Node_ComponentBoundEvent>(
 			Graph.Get(),
 			FVector2D(0, 0),
 			EK2NewNodeFlags::SelectNewNode,
-			[ComponentProperty, DelegateProperty](UK2Node_ComponentBoundEvent* NewInstance)
+			[DelegateProperty](UK2Node_ComponentBoundEvent* NewInstance)
 			{
-				// NewInstance->InitializeComponentBoundEventParams(ComponentProperty, DelegateProperty);
 				UClass* ComponentOwnerClass = DelegateProperty->GetOwnerClass();
-
 				NewInstance->ComponentPropertyName = ComponentOwnerClass->GetFName();
 				NewInstance->DelegatePropertyName = DelegateProperty->GetFName();
 				NewInstance->DelegateOwnerClass = CastChecked<UClass>(DelegateProperty->GetOwner<UObject>())->GetAuthoritativeClass();
@@ -129,10 +120,6 @@ UK2Node* FNodeDocsGenerator::GT_InitializeForSpawner(UBlueprintNodeSpawner* Spaw
 			}
 		);
 
-		NodeInst = EventNode;
-
-		const FString NodeShortTitle = NodeInst ? NodeInst->GetName() : TEXT("NONE");
-		UE_LOG(LogKantanDocGen, Warning, TEXT("NodeInst name %s."), *NodeShortTitle);
 	}
 	else
 	{
@@ -141,7 +128,7 @@ UK2Node* FNodeDocsGenerator::GT_InitializeForSpawner(UBlueprintNodeSpawner* Spaw
 
 
 	// Currently Blueprint nodes only
-	auto K2NodeInst = Cast< UK2Node >(NodeInst);
+	const auto K2NodeInst = Cast< UK2Node >(NodeInst);
 
 	if(K2NodeInst == nullptr)
 	{
@@ -149,7 +136,7 @@ UK2Node* FNodeDocsGenerator::GT_InitializeForSpawner(UBlueprintNodeSpawner* Spaw
 		return nullptr;
 	}
 
-	auto AssociatedClass = MapToAssociatedClass(K2NodeInst, SourceObject);
+	const auto AssociatedClass = MapToAssociatedClass(K2NodeInst, SourceObject);
 
 	if(!ClassDocsMap.Contains(AssociatedClass))
 	{
@@ -416,6 +403,9 @@ bool FNodeDocsGenerator::GenerateNodeDocs(UK2Node* Node, FNodeProcessingState& S
 	AppendChildRaw(Root, TEXT("class_id"), State.ClassDocXml->GetRootNode()->FindChildNode(TEXT("id"))->GetContent());//GetClassDocId(Class));
 	AppendChildRaw(Root, TEXT("class_name"), State.ClassDocXml->GetRootNode()->FindChildNode(TEXT("display_name"))->GetContent());// FBlueprintEditorUtils::GetFriendlyClassDisplayName(Class).ToString());
 
+	// Add custom type field
+	AppendChildRaw(Root, TEXT("type"), "Node");
+
 	FString NodeShortTitle = Node->GetNodeTitle(ENodeTitleType::ListView).ToString();
 	AppendChildCDATA(Root, TEXT("shorttitle"), NodeShortTitle.TrimEnd());
 
@@ -437,6 +427,95 @@ bool FNodeDocsGenerator::GenerateNodeDocs(UK2Node* Node, FNodeProcessingState& S
 	AppendChildCDATA(Root, TEXT("imgpath"), State.RelImageBasePath / State.ImageFilename);
 	AppendChildCDATA(Root, TEXT("category"), Node->GetMenuCategory().ToString());
 
+	auto Inputs = AppendChild(Root, TEXT("inputs"));
+	for(auto Pin : Node->Pins)
+	{
+		if(Pin->Direction == EEdGraphPinDirection::EGPD_Input)
+		{
+			if(ShouldDocumentPin(Pin))
+			{
+				auto Input = AppendChild(Inputs, TEXT("param"));
+
+				FString PinName, PinType, PinDesc;
+				ExtractPinInformation(Pin, PinName, PinType, PinDesc);
+
+				AppendChildCDATA(Input, TEXT("name"), PinName);
+				AppendChildCDATA(Input, TEXT("type"), PinType);
+				AppendChildCDATA(Input, TEXT("description"), PinDesc);
+			}
+		}
+	}
+
+	auto Outputs = AppendChild(Root, TEXT("outputs"));
+	for(auto Pin : Node->Pins)
+	{
+		if(Pin->Direction == EEdGraphPinDirection::EGPD_Output)
+		{
+			if(ShouldDocumentPin(Pin))
+			{
+				auto Output = AppendChild(Outputs, TEXT("param"));
+
+				FString PinName, PinType, PinDesc;
+				ExtractPinInformation(Pin, PinName, PinType, PinDesc);
+
+				AppendChildCDATA(Output, TEXT("name"), PinName);
+				AppendChildCDATA(Output, TEXT("type"), PinType);
+				AppendChildCDATA(Output, TEXT("description"), PinDesc);
+			}
+		}
+	}
+
+	if(!File.Save(DocFilePath))
+	{
+		return false;
+	}
+
+	if(!UpdateClassDocWithNode(State.ClassDocXml.Get(), Node))
+	{
+		return false;
+	}
+
+	return true;
+}
+
+bool FNodeDocsGenerator::GenerateVariableDocs(UK2Node_Variable* Node, FNodeProcessingState& State)
+{
+	SCOPE_SECONDS_COUNTER(GenerateNodeDocsTime);
+
+	UE_LOG(
+		LogKantanDocGen,
+		Warning, TEXT("GenerateVariableDocs %s"),
+		*Node->GetClass()->GetName()
+	);
+
+	auto NodeDocsPath = State.ClassDocsPath / TEXT("nodes");
+	FString DocFilePath = NodeDocsPath / (GetNodeDocId(Node) + TEXT(".xml"));
+
+	const FString FileTemplate = R"xxx(<?xml version="1.0" encoding="UTF-8"?>
+<root></root>)xxx";
+
+	FXmlFile File(FileTemplate, EConstructMethod::ConstructFromBuffer);
+	auto Root = File.GetRootNode();
+
+	AppendChildCDATA(Root, TEXT("docs_name"), DocsTitle);
+	// Since we pull these from the class xml file, the entries are already CDATA wrapped
+	AppendChildRaw(Root, TEXT("class_id"), State.ClassDocXml->GetRootNode()->FindChildNode(TEXT("id"))->GetContent());//GetClassDocId(Class));
+	AppendChildRaw(Root, TEXT("class_name"), State.ClassDocXml->GetRootNode()->FindChildNode(TEXT("display_name"))->GetContent());// FBlueprintEditorUtils::GetFriendlyClassDisplayName(Class).ToString());
+
+	// Add custom type field
+	AppendChildRaw(Root, TEXT("type"), "Variable");
+
+	FString NodeShortTitle = GetNodeDocId(Node);
+	AppendChildCDATA(Root, TEXT("shorttitle"), NodeShortTitle.TrimEnd());
+
+	FString NodeFullTitle = GetNodeDocId(Node);
+	AppendChildCDATA(Root, TEXT("fulltitle"), NodeFullTitle);
+
+	FProperty* Property = Node->GetPropertyForVariable();
+	FString NodeDesc = Property->GetToolTipText().ToString();
+	AppendChildCDATA(Root, TEXT("description"), NodeDesc);
+	AppendChildCDATA(Root, TEXT("imgpath"), State.RelImageBasePath / State.ImageFilename);
+	AppendChildCDATA(Root, TEXT("category"), Node->GetMenuCategory().ToString());
 	auto Inputs = AppendChild(Root, TEXT("inputs"));
 	for(auto Pin : Node->Pins)
 	{
@@ -567,7 +646,7 @@ bool FNodeDocsGenerator::IsSpawnerDocumentable(UBlueprintNodeSpawner* Spawner, b
 {
 	// Spawners of or deriving from the following classes will be excluded
 	static const TSubclassOf< UBlueprintNodeSpawner > ExcludedSpawnerClasses[] = {
-		UBlueprintVariableNodeSpawner::StaticClass(),
+		// UBlueprintVariableNodeSpawner::StaticClass(),
 		UBlueprintDelegateNodeSpawner::StaticClass(),
 		UBlueprintBoundNodeSpawner::StaticClass(),
 		UBlueprintComponentNodeSpawner::StaticClass(),
