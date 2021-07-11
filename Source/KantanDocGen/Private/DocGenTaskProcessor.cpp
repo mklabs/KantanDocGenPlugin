@@ -88,7 +88,7 @@ void FDocGenTaskProcessor::Stop()
 void FDocGenTaskProcessor::ProcessTask(TSharedPtr< FDocGenTask > InTask)
 {
 	/********** Lambdas for the game thread to execute **********/
-	
+
 	auto GameThread_InitDocGen = [this](FString const& DocTitle, FString const& IntermediateDir) -> bool
 	{
 		Current->Task->Notification->SetExpireDuration(2.0f);
@@ -205,7 +205,7 @@ void FDocGenTaskProcessor::ProcessTask(TSharedPtr< FDocGenTask > InTask)
 
 	FString IntermediateDir = FPaths::ProjectIntermediateDir() / TEXT("KantanDocGen") / Current->Task->Settings.DocumentationTitle;
 
-	DocGenThreads::RunOnGameThread(GameThread_EnqueueEnumerators);	
+	DocGenThreads::RunOnGameThread(GameThread_EnqueueEnumerators);
 
 	// Initialize the doc generator
 	Current->DocGen = MakeUnique< FNodeDocsGenerator >();
@@ -321,7 +321,7 @@ void FDocGenTaskProcessor::ProcessTask(TSharedPtr< FDocGenTask > InTask)
 
 			auto const HyperlinkText = TAttribute< FText >::Create(TAttribute< FText >::FGetter::CreateLambda([] { return LOCTEXT("GeneratedDocsHyperlink", "View docs"); }));
 			// @TODO: Bug in SNotificationItemImpl::SetHyperlink, ignores non-delegate attributes... LOCTEXT("GeneratedDocsHyperlink", "View docs");
-		
+
 			Current->Task->Notification->SetText(LOCTEXT("DocConversionSuccessful", "Doc gen completed"));
 			Current->Task->Notification->SetCompletionState(SNotificationItem::CS_Success);
 			Current->Task->Notification->SetHyperlink(

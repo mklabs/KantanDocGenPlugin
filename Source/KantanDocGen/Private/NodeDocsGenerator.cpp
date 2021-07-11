@@ -14,15 +14,16 @@
 #include "EdGraphSchema_K2.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
-#include "BlueprintActionDatabase.h"
+#include "BlueprintBoundEventNodeSpawner.h"
 #include "BlueprintNodeSpawner.h"
 #include "BlueprintFunctionNodeSpawner.h"
 #include "BlueprintBoundNodeSpawner.h"
 #include "BlueprintComponentNodeSpawner.h"
 #include "BlueprintEventNodeSpawner.h"
+#include "EdGraphSchema_K2_Actions.h"
 #include "K2Node_DynamicCast.h"
 #include "K2Node_Message.h"
-#include "HighResScreenshot.h"
+#include "K2Node_ComponentBoundEvent.h"
 #include "XmlFile.h"
 #include "Slate/WidgetRenderer.h"
 #include "Engine/TextureRenderTarget2D.h"
@@ -30,6 +31,9 @@
 #include "ThreadingHelpers.h"
 #include "Stats/StatsMisc.h"
 #include "Runtime/ImageWriteQueue/Public/ImageWriteTask.h"
+#include "BlueprintVariableNodeSpawner.h"
+#include "BlueprintDelegateNodeSpawner.h"
+#include "K2Node_CallFunction.h"
 
 FNodeDocsGenerator::~FNodeDocsGenerator()
 {
@@ -81,7 +85,60 @@ UK2Node* FNodeDocsGenerator::GT_InitializeForSpawner(UBlueprintNodeSpawner* Spaw
 	}
 
 	// Spawn an instance into the graph
-	auto NodeInst = Spawner->Invoke(Graph.Get(), IBlueprintNodeBinder::FBindingSet{}, FVector2D(0, 0));
+	UEdGraphNode* NodeInst = nullptr;
+	if (Spawner->IsA<UBlueprintBoundEventNodeSpawner>())
+	{
+		UBlueprintBoundEventNodeSpawner* BlueprintBoundEventNodeSpawner = Cast<UBlueprintBoundEventNodeSpawner>(Spawner);
+
+		FMulticastDelegateProperty const* DelegateProperty = BlueprintBoundEventNodeSpawner->GetEventDelegate();
+		UField* Field = DelegateProperty->GetOwnerUField();
+		FName EventName = Field->GetFName();
+		FString Name = Field->GetName();
+
+		const FProperty* OwnerProperty = DelegateProperty->GetOwnerProperty();
+		const FName PropFName = OwnerProperty->GetFName();
+		FString PropName = OwnerProperty->GetName();
+		UClass* OwnerClass = DelegateProperty->GetOwnerClass();
+		UClass* SourceClass = SourceObject->GetClass();
+
+		FString OwnerClassName = OwnerClass->GetName();
+		FString SourceClassName = SourceClass->GetName();
+
+
+		const FObjectProperty* ComponentProperty = Cast<FObjectProperty>(DelegateProperty);
+
+		// Create a new event node
+		UK2Node_ComponentBoundEvent* EventNode = FEdGraphSchemaAction_K2NewNode::SpawnNode<UK2Node_ComponentBoundEvent>(
+			Graph.Get(),
+			FVector2D(0, 0),
+			EK2NewNodeFlags::SelectNewNode,
+			[ComponentProperty, DelegateProperty](UK2Node_ComponentBoundEvent* NewInstance)
+			{
+				// NewInstance->InitializeComponentBoundEventParams(ComponentProperty, DelegateProperty);
+				UClass* ComponentOwnerClass = DelegateProperty->GetOwnerClass();
+
+				NewInstance->ComponentPropertyName = ComponentOwnerClass->GetFName();
+				NewInstance->DelegatePropertyName = DelegateProperty->GetFName();
+				NewInstance->DelegateOwnerClass = CastChecked<UClass>(DelegateProperty->GetOwner<UObject>())->GetAuthoritativeClass();
+
+				NewInstance->EventReference.SetFromField<UFunction>(DelegateProperty->SignatureFunction, /*bIsConsideredSelfContext =*/false);
+
+				NewInstance->CustomFunctionName = FName(*FString::Printf(TEXT("BndEvt__%s_%s_%s_%s"), *NewInstance->GetBlueprint()->GetName(), *DelegateProperty->GetName(), *NewInstance->GetName(), *NewInstance->EventReference.GetMemberName().ToString()));
+				NewInstance->bOverrideFunction = false;
+				NewInstance->bInternalEvent = true;
+			}
+		);
+
+		NodeInst = EventNode;
+
+		const FString NodeShortTitle = NodeInst ? NodeInst->GetName() : TEXT("NONE");
+		UE_LOG(LogKantanDocGen, Warning, TEXT("NodeInst name %s."), *NodeShortTitle);
+	}
+	else
+	{
+		NodeInst = Spawner->Invoke(Graph.Get(), IBlueprintNodeBinder::FBindingSet{}, FVector2D(0, 0));
+	}
+
 
 	// Currently Blueprint nodes only
 	auto K2NodeInst = Cast< UK2Node >(NodeInst);
@@ -101,7 +158,7 @@ UK2Node* FNodeDocsGenerator::GT_InitializeForSpawner(UBlueprintNodeSpawner* Spaw
 		// Also update the index xml
 		UpdateIndexDocWithClass(IndexXml.Get(), AssociatedClass);
 	}
-	
+
 	OutState = FNodeProcessingState();
 	OutState.ClassDocXml = ClassDocsMap.FindChecked(AssociatedClass);
 	OutState.ClassDocsPath = OutputDir / GetClassDocId(AssociatedClass);
@@ -170,7 +227,7 @@ bool FNodeDocsGenerator::GenerateNodeImage(UEdGraphNode* Node, FNodeProcessingSt
 		auto RenderTarget = Renderer.DrawWidget(NodeWidget.ToSharedRef(), DrawSize);
 
 		auto Desired = NodeWidget->GetDesiredSize();
-	
+
 		FTextureRenderTargetResource* RTResource = RenderTarget->GameThread_GetRenderTargetResource();
 		Rect = FIntRect(0, 0, (int32)Desired.X, (int32)Desired.Y);
 		FReadSurfaceDataFlags ReadPixelFlags(RCM_UNorm);
@@ -205,7 +262,7 @@ bool FNodeDocsGenerator::GenerateNodeImage(UEdGraphNode* Node, FNodeProcessingSt
 	ImageTask->CompressionQuality = (int32)EImageCompressionQuality::Default;
 	ImageTask->bOverwriteFile = true;
 	ImageTask->PixelPreProcessors.Add(TAsyncAlphaWrite<FColor>(255));
-	
+
 	if(ImageTask->RunTask())
 	{
 		// Success!
@@ -253,7 +310,7 @@ bool ExtractPinInformation(UEdGraphPin* Pin, FString& OutName, FString& OutType,
 	{
 		// @NOTE: This is based on the formatting in UEdGraphSchema_K2::ConstructBasicPinTooltip.
 		// If that is changed, this will fail!
-		
+
 		auto TooltipPtr = *Tooltip;
 
 		// Parse name line
@@ -353,7 +410,7 @@ bool FNodeDocsGenerator::GenerateNodeDocs(UK2Node* Node, FNodeProcessingState& S
 
 	FXmlFile File(FileTemplate, EConstructMethod::ConstructFromBuffer);
 	auto Root = File.GetRootNode();
-	
+
 	AppendChildCDATA(Root, TEXT("docs_name"), DocsTitle);
 	// Since we pull these from the class xml file, the entries are already CDATA wrapped
 	AppendChildRaw(Root, TEXT("class_id"), State.ClassDocXml->GetRootNode()->FindChildNode(TEXT("id"))->GetContent());//GetClassDocId(Class));
@@ -379,7 +436,7 @@ bool FNodeDocsGenerator::GenerateNodeDocs(UK2Node* Node, FNodeProcessingState& S
 	AppendChildCDATA(Root, TEXT("description"), NodeDesc);
 	AppendChildCDATA(Root, TEXT("imgpath"), State.RelImageBasePath / State.ImageFilename);
 	AppendChildCDATA(Root, TEXT("category"), Node->GetMenuCategory().ToString());
-	
+
 	auto Inputs = AppendChild(Root, TEXT("inputs"));
 	for(auto Pin : Node->Pins)
 	{
@@ -427,7 +484,7 @@ bool FNodeDocsGenerator::GenerateNodeDocs(UK2Node* Node, FNodeProcessingState& S
 	{
 		return false;
 	}
-	
+
 	return true;
 }
 
@@ -474,12 +531,6 @@ FString FNodeDocsGenerator::GetNodeDocId(UEdGraphNode* Node)
 	// @TODO: Not sure this is right thing to use
 	return Node->GetDocumentationExcerptName();
 }
-
-
-#include "BlueprintVariableNodeSpawner.h"
-#include "BlueprintDelegateNodeSpawner.h"
-#include "K2Node_CallFunction.h"
-#include "K2Node_DynamicCast.h"
 
 /*
 This takes a graph node object and attempts to map it to the class which the node conceptually belong to.
@@ -539,7 +590,6 @@ bool FNodeDocsGenerator::IsSpawnerDocumentable(UBlueprintNodeSpawner* Spawner, b
 	};
 
 	static const uint32 PermittedAccessSpecifiers = (FUNC_Public | FUNC_Protected);
-
 
 	for(auto ExclSpawnerClass : ExcludedSpawnerClasses)
 	{
